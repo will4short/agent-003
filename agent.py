@@ -321,6 +321,21 @@ tools = [
     "strict": True
     },
     {
+        "type": "function",
+        "name": "propose_recovery",
+        "description": (
+            "Request a human-reviewed rollback of the most recent approved edit "
+            "in this session. Never restores without explicit APPROVE."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
     "type": "function",
     "name": "run_tests",
     "description": (
@@ -443,7 +458,7 @@ def run_project_tests(project_root):
             "status": "ERROR",
             "message": str(error)
         }
-    
+
 def verify_python_file(project_root, filename):
     if not is_safe_project_file(project_root, filename):
         return {
@@ -502,7 +517,7 @@ def verify_python_file(project_root, filename):
             "status": "ERROR",
             "message": str(error)
         }
-    
+
 def propose_edit(project_root, filename, new_content):
     if not is_safe_project_file(project_root, filename):
         return "Access denied: File is restricted."
@@ -647,13 +662,89 @@ def apply_approved_proposal(project_root, proposal):
             "message": str(error),
         }
 
+    # Return success and preserve recovery information
     return {
         "status": "APPLIED",
         "filename": filename,
         "message": "Approved change applied successfully.",
+        "recovery": {
+            "filename": filename,
+            "original_content": current_content,
+            "applied_hash": file_hash(proposal["new_content"]),
+        },
     }
-                   
+
 PROJECT_ROOT = select_project()
+
+def propose_recovery(project_root, recovery):
+    """
+    Prepare a proposal to restore a file's previous content.
+    Does not modify the file.
+    """
+    filename = recovery["filename"]
+
+    # Check whether the file is permitted
+    if not is_safe_project_file(project_root, filename):
+        return {
+            "status": "BLOCKED",
+            "message": "Recovery blocked: File is restricted.",
+        }
+
+    file_path = (project_root / filename).resolve()
+
+    if not file_path.is_file():
+        return {
+            "status": "CANCELLED",
+            "message": "Recovery cancelled: File no longer exists.",
+        }
+
+    try:
+        current_content = file_path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return {
+            "status": "ERROR",
+            "message": "Could not read the file for recovery.",
+        }
+
+    # Only recover if the file still matches the applied version
+    if file_hash(current_content) != recovery["applied_hash"]:
+        return {
+            "status": "CANCELLED",
+            "message": "Recovery cancelled: File changed after the approved edit.",
+        }
+
+    # Reuse the existing proposal and approval system
+    return propose_edit(
+        project_root,
+        filename,
+        recovery["original_content"],
+    )
+
+def review_and_apply_recovery(project_root, recovery):
+    """Review a rollback with the human; never silently restore."""
+    if recovery is None:
+        return {"status": "UNAVAILABLE", "message": "No approved edit to recover."}
+
+    proposal = propose_recovery(project_root, recovery)
+    if not isinstance(proposal, dict) or proposal.get("status") != "PENDING":
+        return proposal
+
+    print("\n--- RECOVERY REQUEST ---")
+    print("This proposes restoring the previous version of the file.")
+    review = review_proposal(proposal)
+    if review["decision"] == "APPROVE":
+        applied = apply_approved_proposal(project_root, proposal)
+        if isinstance(applied, dict):
+            applied.pop("recovery", None)
+        return applied
+    if review["decision"] == "REVISE":
+        return {
+            "status": "REVISION_REQUESTED",
+            "feedback": review["feedback"],
+            "message": "Rollback not applied. Ask for a revised proposal.",
+        }
+    return {"status": "REJECTED", "message": "Rollback not applied."}
+
 
 print("\nAGENT 003 — PROJECT CODING AGENT")
 print("--------------------------------")
@@ -694,11 +785,15 @@ instructions = (
     "Test execution requires explicit human approval. "
     "Never claim tests passed unless run_tests returns PASS. "
     "If tests fail, explain the reported failures. "
+    "If verification or tests fail after an approved edit, explain the failure "
+    "and offer propose_recovery. Do not roll back without explicit approval. "
+    "Call run_tests directly when requested; its tool prompts for approval. "
 
     "Do not execute application code or arbitrary shell commands. "
 )
 
 previous_response_id = None
+last_recovery = None  # In-memory; lasts only for this process.
 
 while True:
 
@@ -790,7 +885,10 @@ while True:
                         arguments["new_content"]
                     )
 
-                    if isinstance(proposal, dict) and proposal.get("status") == "PENDING":
+                    if (
+                        isinstance(proposal, dict)
+                        and proposal.get("status") == "PENDING"
+                    ):
 
                         review = review_proposal(proposal)
 
@@ -799,6 +897,13 @@ while True:
                                 PROJECT_ROOT,
                                 proposal
                             )
+
+                            # Preserve recovery information after a successful edit
+                            if (
+                                isinstance(result, dict)
+                                and result.get("status") == "APPLIED"
+                            ):
+                                last_recovery = result.pop("recovery")
 
                         elif review["decision"] == "REVISE":
                             result = {
@@ -825,14 +930,40 @@ while True:
                     else:
                         result = proposal
 
+                elif tool_call.name == "propose_recovery":
+                    result = review_and_apply_recovery(PROJECT_ROOT, last_recovery)
+                    if isinstance(result, dict) and result.get("status") == "APPLIED":
+                        last_recovery = None
+
                 elif tool_call.name == "verify_python":
                     result = verify_python_file(
                         PROJECT_ROOT,
                         arguments["filename"]
                     )
+                    if (
+                        isinstance(result, dict)
+                        and result.get("status") == "FAIL"
+                        and last_recovery is not None
+                        and arguments["filename"] == last_recovery["filename"]
+                    ):
+                        result["recovery_available"] = True
+                        result["recovery_guidance"] = (
+                            "An approved edit failed syntax verification. "
+                            "Use propose_recovery to request a human-approved rollback."
+                        )
 
                 elif tool_call.name == "run_tests":
                     result = run_project_tests(PROJECT_ROOT)
+                    if (
+                        isinstance(result, dict)
+                        and result.get("status") == "FAIL"
+                        and last_recovery is not None
+                    ):
+                        result["recovery_available"] = True
+                        result["recovery_guidance"] = (
+                            "A prior approved edit can be rolled back. "
+                            "Ask to use propose_recovery; rollback requires human APPROVE."
+                        )
 
                 else:
                     result = "Unknown tool."
