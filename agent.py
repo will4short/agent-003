@@ -227,6 +227,23 @@ PLAN_TOOL_DEFINITIONS = [
     },
 ]
 
+from agent_symbols import search_python_symbols, python_module_imports  # LESSON25_SYMBOL_SEARCH
+
+SYMBOL_TOOLS = [
+    {
+        "type": "function", "name": "find_python_symbols",
+        "description": "Find Python function, async function, method, or class definitions by name without reading whole files or executing code.",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
+                       "required": ["query"], "additionalProperties": False}, "strict": True,
+    },
+    {
+        "type": "function", "name": "inspect_python_imports",
+        "description": "List imports declared in one Python file without importing or executing it.",
+        "parameters": {"type": "object", "properties": {"filename": {"type": "string"}},
+                       "required": ["filename"], "additionalProperties": False}, "strict": True,
+    },
+]
+
 tools = [
     {
         "type": "function",
@@ -887,6 +904,7 @@ def apply_approved_multi_edit(project_root, proposal):
 from agent_planning import TaskPlanner
 # LESSON22: register planning tools without modifying existing tool definitions.
 tools.extend(PLAN_TOOL_DEFINITIONS)
+tools.extend(SYMBOL_TOOLS)  # LESSON25_TOOL_REGISTRATION
 task_planner = TaskPlanner()
 
 PROJECT_ROOT = select_project()
@@ -1011,6 +1029,8 @@ instructions = (
     "When verify_python or run_tests fails, use diagnose_last_failure to obtain "
     "read-only diagnostic suggestions. Inspect the source before proposing edits. "
     "Never treat a diagnosis as proof or permission to modify files. "
+    "Prefer find_python_symbols for locating Python definitions and inspect_python_imports for dependency discovery; "
+    "use read_file only when source content is necessary. Search results are bounded and do not execute code. "
     "For nontrivial multi-step tasks, first use create_task_plan with 2 to 6 concise steps. "
     "After planning, immediately continue permitted read-only inspection and verification in the same turn; "
     "do not stop merely to restate the plan. Respect tool limits and cost budget. "
@@ -1129,6 +1149,12 @@ while True:
 
                 elif tool_call.name == "get_task_plan":
                     result = task_planner.status()
+
+                elif tool_call.name == "find_python_symbols":
+                    result = search_python_symbols(PROJECT_ROOT, arguments["query"], is_safe_project_file)
+
+                elif tool_call.name == "inspect_python_imports":
+                    result = python_module_imports(PROJECT_ROOT, arguments["filename"], is_safe_project_file)
 
                 elif tool_call.name == "list_files":
                     result = list_project_files(PROJECT_ROOT)
