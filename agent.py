@@ -230,6 +230,13 @@ PLAN_TOOL_DEFINITIONS = [
 tools = [
     {
         "type": "function",
+        "name": "diagnose_last_failure",
+        "description": "Analyze the latest failed Python verification or approved test run; suggestions only, no edits or execution.",
+        "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        "strict": True,
+    },
+    {
+        "type": "function",
         "name": "list_files",
         "description": "List source files in the selected project.",
         "parameters": {
@@ -1001,6 +1008,9 @@ instructions = (
     "and offer propose_recovery. Do not roll back without explicit approval. "
     "Call run_tests directly when requested; its tool prompts for approval. "
 
+    "When verify_python or run_tests fails, use diagnose_last_failure to obtain "
+    "read-only diagnostic suggestions. Inspect the source before proposing edits. "
+    "Never treat a diagnosis as proof or permission to modify files. "
     "For nontrivial multi-step tasks, first use create_task_plan with 2 to 6 concise steps. "
     "Use get_task_plan to inspect progress and complete_plan_step only after verified results. "
     "Plans are advisory; they never replace human approval for edits or tests. "
@@ -1018,6 +1028,9 @@ try:
     cost_guard = CostGuard.from_environment()
 except ValueError as exc:
     raise SystemExit(f"COST CONFIGURATION ERROR: {exc}. See Lesson 21 setup.")
+
+from agent_diagnostics import diagnose_failure  # LESSON23_DIAGNOSTICS
+last_failure = None  # Read-only, in-process diagnostic context.
 
 previous_response_id = None
 last_recovery = None  # In-memory; lasts only for this process.
@@ -1097,7 +1110,11 @@ while True:
             try:
                 arguments = json.loads(tool_call.arguments)
 
-                if tool_call.name == "create_task_plan":
+                if tool_call.name == "diagnose_last_failure":
+                    result = (diagnose_failure(*last_failure) if last_failure else
+                              {"status": "UNAVAILABLE", "message": "No recorded failed test or verification."})
+
+                elif tool_call.name == "create_task_plan":
                     result = task_planner.create(arguments["steps"])
 
                 elif tool_call.name == "complete_plan_step":
@@ -1237,6 +1254,11 @@ while True:
             except Exception as error:
                 result = f"Tool error: {type(error).__name__}"
 
+            if tool_call.name in {"verify_python", "run_tests"} and isinstance(result, dict):
+                if result.get("status") == "FAIL":
+                    last_failure = (tool_call.name, result)
+                elif result.get("status") == "PASS":
+                    last_failure = None
             session_recorder.record(tool_call.name, result)
             print(f"Tool result: {str(result)[:1000]}")
 
