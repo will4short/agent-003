@@ -917,6 +917,15 @@ RELATIONSHIP_TOOLS = [
      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}, "strict": True},
 ]
 tools.extend(RELATIONSHIP_TOOLS)
+# LESSON31_PROJECT_INVESTIGATION: static, bounded navigation only.
+from agent_project_investigation import investigate_project
+INVESTIGATION_TOOLS = [{
+    "type": "function", "name": "investigate_project",
+    "description": "Find likely Python files for a coding question by matching filenames and AST symbol names. Read-only static shortlist; not a diagnosis.",
+    "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
+                   "required": ["query"], "additionalProperties": False}, "strict": True,
+}]
+tools.extend(INVESTIGATION_TOOLS)
 
 task_planner = TaskPlanner()
 
@@ -1042,6 +1051,9 @@ instructions = (
     "When verify_python or run_tests fails, use diagnose_last_failure to obtain "
     "read-only diagnostic suggestions. Inspect the source before proposing edits. "
     "Never treat a diagnosis as proof or permission to modify files. "
+    "For unfamiliar Python bugs, use investigate_project to shortlist relevant files, "
+    "then inspect source and related tests before making a diagnosis. "
+    "Do not present filename/symbol matches as proof of root cause. "
     "For call relationships, prefer trace_python_calls over full file reads. "
     "For relationships among local Python modules, prefer trace_local_imports. "
     "These tools are static approximations, not runtime call proofs. "
@@ -1200,6 +1212,9 @@ while True:
 
                 elif tool_call.name == "trace_local_imports":
                     result = trace_local_imports(PROJECT_ROOT, is_safe_project_file)
+
+                elif tool_call.name == "investigate_project":
+                    result = investigate_project(PROJECT_ROOT, arguments["query"], is_safe_project_file)
 
                 elif tool_call.name == "list_files":
                     result = list_project_files(PROJECT_ROOT)
