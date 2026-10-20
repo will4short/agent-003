@@ -1074,8 +1074,15 @@ last_failure = None  # Read-only, in-process diagnostic context.
 
 from agent_context import ReadContext  # LESSON24_CONTEXT_INTEGRATION
 read_context = ReadContext()
+from agent_tool_optimizer import ToolCallOptimizer, TOOL_EFFICIENCY_GUIDANCE  # LESSON29_TOOL_OPTIMIZER
+tool_optimizer = ToolCallOptimizer()
+instructions += " " + TOOL_EFFICIENCY_GUIDANCE
 previous_response_id = None
 last_recovery = None  # In-memory; lasts only for this process.
+
+class _Lesson29ShortCircuit(Exception):
+    def __init__(self, result):
+        self.result = result
 
 while True:
 
@@ -1094,6 +1101,7 @@ while True:
 
     user_goal = "\n".join(message_lines).strip()
     read_context.invalidate()  # One cache per user task turn.
+    tool_optimizer.reset()  # LESSON29: task-scoped read-only cache.
 
     if user_goal.lower() in {"exit", "quit"}:
         session_recorder.finish()
@@ -1154,8 +1162,17 @@ while True:
 
             print(f"\nAgent wants to use: {tool_call.name}")
 
+            arguments = None  # LESSON29: prevent stale args after parse failures.
             try:
                 arguments = json.loads(tool_call.arguments)
+                optimization = tool_optimizer.evaluate(tool_call.name, arguments)
+                if optimization is not None:
+                    result = optimization
+                else:
+                    result = None
+                if optimization is not None:
+                    raise _Lesson29ShortCircuit(optimization)
+
 
                 if tool_call.name == "diagnose_last_failure":
                     result = (diagnose_failure(*last_failure) if last_failure else
@@ -1310,6 +1327,8 @@ while True:
                 else:
                     result = "Unknown tool."
 
+            except _Lesson29ShortCircuit as short_circuit:
+                result = short_circuit.result
             except Exception as error:
                 result = f"Tool error: {type(error).__name__}"
 
@@ -1320,6 +1339,9 @@ while True:
                     last_failure = None
             if tool_call.name in {"propose_edit", "propose_multi_edit", "propose_recovery"}:
                 read_context.invalidate()  # Conservative: approval may have changed files.
+                tool_optimizer.reset()  # Do not reuse analysis after edit/recovery.
+            if isinstance(arguments, dict):
+                tool_optimizer.record(tool_call.name, arguments, result)
             session_recorder.record(tool_call.name, result)
             print(f"Tool result: {str(result)[:1000]}")
 
