@@ -1074,6 +1074,7 @@ last_failure = None  # Read-only, in-process diagnostic context.
 
 from agent_context import ReadContext  # LESSON24_CONTEXT_INTEGRATION
 read_context = ReadContext()
+from agent_safe_errors import safe_tool_error  # LESSON30_PART2
 from agent_tool_optimizer import ToolCallOptimizer, TOOL_EFFICIENCY_GUIDANCE  # LESSON29_TOOL_OPTIMIZER
 from agent_cache_hardening import FileAwareToolCallOptimizer as ToolCallOptimizer  # LESSON30_CACHE_HARDENING
 tool_optimizer = ToolCallOptimizer(PROJECT_ROOT)
@@ -1331,7 +1332,7 @@ while True:
             except _Lesson29ShortCircuit as short_circuit:
                 result = short_circuit.result
             except Exception as error:
-                result = f"Tool error: {type(error).__name__}"
+                result = safe_tool_error(tool_call.name, error)
 
             if tool_call.name in {"verify_python", "run_tests"} and isinstance(result, dict):
                 if result.get("status") == "FAIL":
