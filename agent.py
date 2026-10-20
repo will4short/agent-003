@@ -204,6 +204,29 @@ def search_project_code(project_root, keyword):
                     return matches
 
     return matches
+# LESSON22_PLANNING_INTEGRATION: advisory plan tools, never authorization.
+PLAN_TOOL_DEFINITIONS = [
+    {
+        "type": "function", "name": "create_task_plan",
+        "description": "Create a short advisory plan before a multi-step coding task. Does not change files or grant approval.",
+        "parameters": {"type": "object", "properties": {"steps": {
+            "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 6}},
+            "required": ["steps"], "additionalProperties": False}, "strict": True,
+    },
+    {
+        "type": "function", "name": "complete_plan_step",
+        "description": "Mark a planning step complete ONLY after verifying the corresponding action succeeded.",
+        "parameters": {"type": "object", "properties": {"step_number": {"type": "integer"}},
+            "required": ["step_number"], "additionalProperties": False}, "strict": True,
+    },
+    {
+        "type": "function", "name": "get_task_plan",
+        "description": "Get the current advisory plan and completion state.",
+        "parameters": {"type": "object", "properties": {}, "required": [],
+            "additionalProperties": False}, "strict": True,
+    },
+]
+
 tools = [
     {
         "type": "function",
@@ -854,6 +877,11 @@ def apply_approved_multi_edit(project_root, proposal):
             temp_path.unlink(missing_ok=True)
 
 
+from agent_planning import TaskPlanner
+# LESSON22: register planning tools without modifying existing tool definitions.
+tools.extend(PLAN_TOOL_DEFINITIONS)
+task_planner = TaskPlanner()
+
 PROJECT_ROOT = select_project()
 
 def propose_recovery(project_root, recovery):
@@ -973,6 +1001,10 @@ instructions = (
     "and offer propose_recovery. Do not roll back without explicit approval. "
     "Call run_tests directly when requested; its tool prompts for approval. "
 
+    "For nontrivial multi-step tasks, first use create_task_plan with 2 to 6 concise steps. "
+    "Use get_task_plan to inspect progress and complete_plan_step only after verified results. "
+    "Plans are advisory; they never replace human approval for edits or tests. "
+    "Do not claim a step succeeded without a successful tool result. "
     "Do not execute application code or arbitrary shell commands. "
 )
 
@@ -1065,7 +1097,16 @@ while True:
             try:
                 arguments = json.loads(tool_call.arguments)
 
-                if tool_call.name == "list_files":
+                if tool_call.name == "create_task_plan":
+                    result = task_planner.create(arguments["steps"])
+
+                elif tool_call.name == "complete_plan_step":
+                    result = task_planner.complete(arguments["step_number"])
+
+                elif tool_call.name == "get_task_plan":
+                    result = task_planner.status()
+
+                elif tool_call.name == "list_files":
                     result = list_project_files(PROJECT_ROOT)
 
                 elif tool_call.name == "search_code":
