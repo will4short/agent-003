@@ -976,6 +976,10 @@ instructions = (
     "Do not execute application code or arbitrary shell commands. "
 )
 
+from agent_session_runtime import SessionRecorder  # LESSON20_SESSION_INTEGRATION
+session_recorder = SessionRecorder()
+print("\nMEMORY STATUS:", session_recorder.startup_message())
+instructions += " " + session_recorder.context_for_model()
 previous_response_id = None
 last_recovery = None  # In-memory; lasts only for this process.
 
@@ -997,6 +1001,7 @@ while True:
     user_goal = "\n".join(message_lines).strip()
 
     if user_goal.lower() in {"exit", "quit"}:
+        session_recorder.finish()
         print("\nAgent 003: Goodbye!")
         break
 
@@ -1172,6 +1177,7 @@ while True:
             except Exception as error:
                 result = f"Tool error: {type(error).__name__}"
 
+            session_recorder.record(tool_call.name, result)
             print(f"Tool result: {str(result)[:1000]}")
 
             tool_outputs.append({

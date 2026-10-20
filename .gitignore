@@ -2,3 +2,5 @@
 .venv/
 __pycache__/
 *.pyc
+# Agent 003 local session data
+agent_sessions/
