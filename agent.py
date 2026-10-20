@@ -1012,6 +1012,10 @@ instructions = (
     "read-only diagnostic suggestions. Inspect the source before proposing edits. "
     "Never treat a diagnosis as proof or permission to modify files. "
     "For nontrivial multi-step tasks, first use create_task_plan with 2 to 6 concise steps. "
+    "After planning, immediately continue permitted read-only inspection and verification in the same turn; "
+    "do not stop merely to restate the plan. Respect tool limits and cost budget. "
+    "Only mark steps complete after successful relevant tool evidence; reporting is complete when you report. "
+    "Do not perform edits or test execution without the existing human approval gates. "
     "Use get_task_plan to inspect progress and complete_plan_step only after verified results. "
     "Plans are advisory; they never replace human approval for edits or tests. "
     "Do not claim a step succeeded without a successful tool result. "
@@ -1032,6 +1036,8 @@ except ValueError as exc:
 from agent_diagnostics import diagnose_failure  # LESSON23_DIAGNOSTICS
 last_failure = None  # Read-only, in-process diagnostic context.
 
+from agent_context import ReadContext  # LESSON24_CONTEXT_INTEGRATION
+read_context = ReadContext()
 previous_response_id = None
 last_recovery = None  # In-memory; lasts only for this process.
 
@@ -1051,6 +1057,7 @@ while True:
         message_lines.append(line)
 
     user_goal = "\n".join(message_lines).strip()
+    read_context.invalidate()  # One cache per user task turn.
 
     if user_goal.lower() in {"exit", "quit"}:
         session_recorder.finish()
@@ -1133,9 +1140,9 @@ while True:
                     )
 
                 elif tool_call.name == "read_file":
-                    result = read_project_file(
-                        PROJECT_ROOT,
-                        arguments["filename"]
+                    result = read_context.read(
+                        PROJECT_ROOT, arguments["filename"],
+                        read_project_file, is_safe_project_file
                     )
 
                 elif tool_call.name in {"git_status", "get_git_status"}:
@@ -1259,6 +1266,8 @@ while True:
                     last_failure = (tool_call.name, result)
                 elif result.get("status") == "PASS":
                     last_failure = None
+            if tool_call.name in {"propose_edit", "propose_multi_edit", "propose_recovery"}:
+                read_context.invalidate()  # Conservative: approval may have changed files.
             session_recorder.record(tool_call.name, result)
             print(f"Tool result: {str(result)[:1000]}")
 
