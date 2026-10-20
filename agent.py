@@ -1104,9 +1104,13 @@ while True:
     if not user_goal:
         continue
 
+    # LESSON27_TOOL_ROUTING: task-specific advice, not permission to execute.
+    from agent_tool_selection import tool_guidance
+    active_instructions = instructions + tool_guidance(user_goal)
+
     request = {
         "model": "gpt-5.5",
-        "instructions": instructions,
+        "instructions": active_instructions,
         "input": user_goal,
         "tools": tools,
     }
@@ -1329,7 +1333,7 @@ while True:
             cost_guard.ensure_can_request()
             response = client.responses.create(
             model="gpt-5.5",
-            instructions=instructions,
+            instructions=active_instructions,
             previous_response_id=response.id,
             input=tool_outputs,
             tools=tools,
