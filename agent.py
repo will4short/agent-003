@@ -905,6 +905,19 @@ from agent_planning import TaskPlanner
 # LESSON22: register planning tools without modifying existing tool definitions.
 tools.extend(PLAN_TOOL_DEFINITIONS)
 tools.extend(SYMBOL_TOOLS)  # LESSON25_TOOL_REGISTRATION
+# LESSON26_RELATIONSHIPS
+from agent_relationships import trace_python_calls, trace_local_imports
+RELATIONSHIP_TOOLS = [
+    {"type": "function", "name": "trace_python_calls",
+     "description": "Trace syntactic function calls in a Python file; use FIRST for who-calls-whom questions. Static analysis only.",
+     "parameters": {"type": "object", "properties": {"filename": {"type": "string"}},
+                    "required": ["filename"], "additionalProperties": False}, "strict": True},
+    {"type": "function", "name": "trace_local_imports",
+     "description": "Trace dependencies between local Python modules across the project; use FIRST for local-module relationship questions.",
+     "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}, "strict": True},
+]
+tools.extend(RELATIONSHIP_TOOLS)
+
 task_planner = TaskPlanner()
 
 PROJECT_ROOT = select_project()
@@ -1029,6 +1042,9 @@ instructions = (
     "When verify_python or run_tests fails, use diagnose_last_failure to obtain "
     "read-only diagnostic suggestions. Inspect the source before proposing edits. "
     "Never treat a diagnosis as proof or permission to modify files. "
+    "For call relationships, prefer trace_python_calls over full file reads. "
+    "For relationships among local Python modules, prefer trace_local_imports. "
+    "These tools are static approximations, not runtime call proofs. "
     "Prefer find_python_symbols for locating Python definitions and inspect_python_imports for dependency discovery; "
     "use read_file only when source content is necessary. Search results are bounded and do not execute code. "
     "For nontrivial multi-step tasks, first use create_task_plan with 2 to 6 concise steps. "
@@ -1155,6 +1171,12 @@ while True:
 
                 elif tool_call.name == "inspect_python_imports":
                     result = python_module_imports(PROJECT_ROOT, arguments["filename"], is_safe_project_file)
+
+                elif tool_call.name == "trace_python_calls":
+                    result = trace_python_calls(PROJECT_ROOT, arguments["filename"], is_safe_project_file)
+
+                elif tool_call.name == "trace_local_imports":
+                    result = trace_local_imports(PROJECT_ROOT, is_safe_project_file)
 
                 elif tool_call.name == "list_files":
                     result = list_project_files(PROJECT_ROOT)
