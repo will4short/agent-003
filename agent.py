@@ -1,4 +1,6 @@
 import hashlib
+import os
+import tempfile
 import subprocess
 import difflib
 import sys
@@ -299,6 +301,37 @@ tools = [
     },
     "strict": True,
 
+    },
+    {
+        "type": "function",
+        "name": "propose_multi_edit",
+        "description": (
+            "Propose a coordinated edit of 2 to 5 existing project files. "
+            "Show combined diffs and require one explicit human approval. "
+            "Provide complete replacement content for every file."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "changes": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 5,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {"type": "string"},
+                            "new_content": {"type": "string"}
+                        },
+                        "required": ["filename", "new_content"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": ["changes"],
+            "additionalProperties": False
+        },
+        "strict": True
     },
     {
     "type": "function",
@@ -674,6 +707,153 @@ def apply_approved_proposal(project_root, proposal):
         },
     }
 
+# Lesson 19: Coordinated editing of existing UTF-8 files only.
+# This is a best-effort rollback, not an atomic filesystem transaction.
+MULTI_EDIT_LIMIT = 5
+
+
+def propose_multi_edit(project_root, changes):
+    if not isinstance(changes, list) or not 2 <= len(changes) <= MULTI_EDIT_LIMIT:
+        return {"status": "BLOCKED", "message": "Specify 2 to 5 existing files."}
+
+    entries = []
+    seen = set()
+    for change in changes:
+        filename = change.get("filename") if isinstance(change, dict) else None
+        new_content = change.get("new_content") if isinstance(change, dict) else None
+        if not isinstance(filename, str) or not isinstance(new_content, str):
+            return {"status": "BLOCKED", "message": "Invalid change entry."}
+        if not is_safe_project_file(project_root, filename):
+            return {"status": "BLOCKED", "message": f"Restricted file: {filename}"}
+        path = (project_root / filename).resolve()
+        if path in seen:
+            return {"status": "BLOCKED", "message": "Duplicate file in proposal."}
+        seen.add(path)
+        if not path.is_file() or path.is_symlink():
+            return {"status": "BLOCKED", "message": f"Missing or linked file: {filename}"}
+        try:
+            if path.stat().st_size > 100_000:
+                return {"status": "BLOCKED", "message": f"File too large: {filename}"}
+            original = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return {"status": "ERROR", "message": f"Cannot read: {filename}"}
+        if len(new_content.encode("utf-8")) > 100_000:
+            return {"status": "BLOCKED", "message": f"Replacement too large: {filename}"}
+        diff = "".join(difflib.unified_diff(
+            original.splitlines(keepends=True), new_content.splitlines(keepends=True),
+            fromfile=f"before/{filename}", tofile=f"after/{filename}"
+        ))
+        if not diff:
+            return {"status": "BLOCKED", "message": f"No changes for: {filename}"}
+        entries.append({"filename": filename, "path": path,
+                        "original": original, "original_hash": file_hash(original),
+                        "new_content": new_content, "diff": diff,
+                        "mode": path.stat().st_mode})
+    return {"status": "PENDING", "entries": entries}
+
+
+def review_multi_edit(proposal):
+    print("\n--- MULTI-FILE CHANGE PROPOSAL ---")
+    print(f"Files affected: {len(proposal['entries'])}")
+    for entry in proposal["entries"]:
+        print("\n" + entry["diff"])
+    print("--- END OF MULTI-FILE PROPOSAL ---")
+    print("Nothing has been changed. APPROVE applies all files; REVISE or REJECT does not.")
+    while True:
+        answer = input("\nYour decision: ").strip()
+        if answer.upper() == "APPROVE":
+            return {"decision": "APPROVE"}
+        if answer.upper() == "REJECT":
+            return {"decision": "REJECT"}
+        if answer.upper() == "REVISE":
+            feedback = input("Explain what you want changed: ").strip()
+            if feedback:
+                return {"decision": "REVISE", "feedback": feedback}
+        elif answer:
+            return {"decision": "REVISE", "feedback": answer}
+        print("Enter APPROVE, REJECT, or revision feedback.")
+
+
+def _stage_replacement(path, content, mode):
+    """Write complete replacement to a temporary sibling before publishing."""
+    fd, temp_name = tempfile.mkstemp(prefix=".agent003-", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, mode)
+        return Path(temp_name)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+
+
+def apply_approved_multi_edit(project_root, proposal):
+    """Preflight every file, then publish staged replacements with guarded rollback."""
+    entries = proposal["entries"]
+    # Preflight all targets BEFORE writing anything.
+    for entry in entries:
+        path = entry["path"]
+        if (not is_safe_project_file(project_root, entry["filename"])
+                or not path.is_file() or path.is_symlink()):
+            return {"status": "CANCELLED", "message": "A target is missing or unsafe; nothing applied."}
+        try:
+            current = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return {"status": "CANCELLED", "message": "A target cannot be read; nothing applied."}
+        if file_hash(current) != entry["original_hash"]:
+            return {"status": "CANCELLED", "message": "A file changed after proposal; nothing applied.",
+                    "filename": entry["filename"]}
+
+    staged = {}
+    applied = []
+    try:
+        # Prepare every new file before changing any originals.
+        for entry in entries:
+            staged[entry["filename"]] = _stage_replacement(
+                entry["path"], entry["new_content"], entry["mode"])
+        for entry in entries:
+            path = entry["path"]
+            # Recheck just before each replacement. External edits remain a race.
+            if (not is_safe_project_file(project_root, entry["filename"])
+                    or not path.is_file() or path.is_symlink()
+                    or file_hash(path.read_text(encoding="utf-8")) != entry["original_hash"]):
+                raise RuntimeError(f"File changed during application: {entry['filename']}")
+            os.replace(staged[entry["filename"]], path)
+            staged.pop(entry["filename"])
+            applied.append(entry)
+        return {"status": "APPLIED", "files": [e["filename"] for e in entries],
+                "message": "All approved replacements applied. Run verification."}
+    except Exception as error:
+        restored = []
+        unresolved = []
+        for entry in reversed(applied):
+            path = entry["path"]
+            try:
+                if (not is_safe_project_file(project_root, entry["filename"])
+                        or not path.is_file() or path.is_symlink()
+                        or file_hash(path.read_text(encoding="utf-8")) != file_hash(entry["new_content"])):
+                    unresolved.append(entry["filename"])
+                    continue
+                backup = _stage_replacement(path, entry["original"], entry["mode"])
+                try:
+                    os.replace(backup, path)
+                finally:
+                    backup.unlink(missing_ok=True)
+                restored.append(entry["filename"])
+            except Exception:
+                unresolved.append(entry["filename"])
+        return {"status": "PARTIAL_FAILURE" if unresolved else "ROLLED_BACK",
+                "message": f"Multi-file application failed: {type(error).__name__}. "
+                           "Rollback was attempted for files already written.",
+                "restored": restored, "unresolved": unresolved,
+                "action_required": "Inspect all target files before proceeding."}
+    finally:
+        for temp_path in staged.values():
+            temp_path.unlink(missing_ok=True)
+
+
 PROJECT_ROOT = select_project()
 
 def propose_recovery(project_root, recovery):
@@ -756,6 +936,10 @@ instructions = (
     "You are Agent 003, a project-aware coding assistant. "
     "You can inspect files, search code, and inspect Git changes. "
 
+    "For changes spanning 2 to 5 existing files, use propose_multi_edit. "
+    "Show all diffs together and require one APPROVE for the entire batch. "
+    "A multi-file operation may roll back on error; report any unresolved files. "
+    "Never describe multi-file editing as crash-proof or fully atomic. "
     "You may propose code modifications using propose_edit. "
     "Every proposed change requires explicit human approval. "
 
@@ -927,6 +1111,23 @@ while True:
                                 ),
                             }
 
+                    else:
+                        result = proposal
+
+                elif tool_call.name == "propose_multi_edit":
+                    proposal = propose_multi_edit(PROJECT_ROOT, arguments["changes"])
+                    if isinstance(proposal, dict) and proposal.get("status") == "PENDING":
+                        review = review_multi_edit(proposal)
+                        if review["decision"] == "APPROVE":
+                            result = apply_approved_multi_edit(PROJECT_ROOT, proposal)
+                            # A single-file recovery checkpoint is no longer reliable.
+                            if result.get("status") in {"APPLIED", "ROLLED_BACK", "PARTIAL_FAILURE"}:
+                                last_recovery = None
+                        elif review["decision"] == "REVISE":
+                            result = {"status": "REVISION_REQUESTED", "feedback": review["feedback"],
+                                      "message": "No files changed; prepare a new combined proposal."}
+                        else:
+                            result = {"status": "REJECTED", "message": "No files changed."}
                     else:
                         result = proposal
 
