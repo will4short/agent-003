@@ -1075,7 +1075,8 @@ last_failure = None  # Read-only, in-process diagnostic context.
 from agent_context import ReadContext  # LESSON24_CONTEXT_INTEGRATION
 read_context = ReadContext()
 from agent_tool_optimizer import ToolCallOptimizer, TOOL_EFFICIENCY_GUIDANCE  # LESSON29_TOOL_OPTIMIZER
-tool_optimizer = ToolCallOptimizer()
+from agent_cache_hardening import FileAwareToolCallOptimizer as ToolCallOptimizer  # LESSON30_CACHE_HARDENING
+tool_optimizer = ToolCallOptimizer(PROJECT_ROOT)
 instructions += " " + TOOL_EFFICIENCY_GUIDANCE
 previous_response_id = None
 last_recovery = None  # In-memory; lasts only for this process.
