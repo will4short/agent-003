@@ -1323,10 +1323,17 @@ while True:
             session_recorder.record(tool_call.name, result)
             print(f"Tool result: {str(result)[:1000]}")
 
+            # LESSON28_RESULT_VALIDATION: advisory metadata for read-only tools only.
+            from agent_result_validation import model_tool_output
+            validated_output = model_tool_output(tool_call.name, result)
+            assessment = validated_output.get('evidence_validation') if isinstance(validated_output, dict) else None
+            if assessment:
+                print(f"Evidence: {assessment['quality']} — {assessment['guidance']}")
+
             tool_outputs.append({
                 "type": "function_call_output",
                 "call_id": tool_call.call_id,
-                "output": json.dumps(result),
+                "output": json.dumps(validated_output),
             })
 
         try:
