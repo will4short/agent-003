@@ -980,6 +980,13 @@ from agent_session_runtime import SessionRecorder  # LESSON20_SESSION_INTEGRATIO
 session_recorder = SessionRecorder()
 print("\nMEMORY STATUS:", session_recorder.startup_message())
 instructions += " " + session_recorder.context_for_model()
+# LESSON21_COST_GUARD: session-only estimated cost protection.
+from agent_cost import CostGuard, BudgetExceeded
+try:
+    cost_guard = CostGuard.from_environment()
+except ValueError as exc:
+    raise SystemExit(f"COST CONFIGURATION ERROR: {exc}. See Lesson 21 setup.")
+
 previous_response_id = None
 last_recovery = None  # In-memory; lasts only for this process.
 
@@ -1003,6 +1010,7 @@ while True:
     if user_goal.lower() in {"exit", "quit"}:
         session_recorder.finish()
         print("\nAgent 003: Goodbye!")
+        print(cost_guard.summary())
         break
 
     if not user_goal:
@@ -1018,7 +1026,18 @@ while True:
     if previous_response_id:
         request["previous_response_id"] = previous_response_id
 
-    response = client.responses.create(**request)
+    try:
+        cost_guard.ensure_can_request()
+        response = client.responses.create(**request)
+        cost_guard.record(response)
+    except BudgetExceeded as exc:
+        print(f"\nCOST LIMIT: {exc}")
+        print(cost_guard.summary())
+        break
+    except Exception as exc:
+        print(f"\nAPI REQUEST FAILED: {type(exc).__name__}: {exc}")
+        print(cost_guard.summary())
+        break
 
     max_steps = 10
 
@@ -1186,13 +1205,26 @@ while True:
                 "output": json.dumps(result),
             })
 
-        response = client.responses.create(
+        try:
+            cost_guard.ensure_can_request()
+            response = client.responses.create(
             model="gpt-5.5",
             instructions=instructions,
             previous_response_id=response.id,
             input=tool_outputs,
             tools=tools,
-        )
+            )
+            cost_guard.record(response)
+        except BudgetExceeded as exc:
+            print(f"\nCOST LIMIT: {exc}")
+            print(cost_guard.summary())
+            previous_response_id = None
+            break
+        except Exception as exc:
+            print(f"\nAPI REQUEST FAILED: {type(exc).__name__}: {exc}")
+            print(cost_guard.summary())
+            previous_response_id = None
+            break
 
     else:
         print("\nAgent 003 reached its step limit.")
