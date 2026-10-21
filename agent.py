@@ -1,4 +1,5 @@
 import hashlib
+from itertools import count
 import os
 import tempfile
 import subprocess
@@ -38,6 +39,8 @@ def list_project_files(project_root):
     import os
 
     ignored_directories = {
+        '.wrangler', 'out', 'tmp', '.turbo', '.cache', 'coverage',
+        'playwright-report', 'test-results',
         ".git",
         ".venv",
         "venv",
@@ -79,6 +82,8 @@ def list_project_files(project_root):
     return sorted(discovered_files)
 
 IGNORED_DIRECTORIES = {
+        '.wrangler', 'out', 'tmp', '.turbo', '.cache', 'coverage',
+        'playwright-report', 'test-results',
     ".git",
     ".venv",
     "venv",
@@ -917,6 +922,16 @@ RELATIONSHIP_TOOLS = [
      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}, "strict": True},
 ]
 tools.extend(RELATIONSHIP_TOOLS)
+# AGENT_V11_WEB_AUDIT
+from agent_web_audit import trace_web_imports
+WEB_IMPORT_TOOLS = [{
+    "type": "function", "name": "trace_web_imports",
+    "description": "Read-only bounded static import map for JS/TS projects; excludes build output. Not Python imports.",
+    "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+    "strict": True,
+}]
+tools.extend(WEB_IMPORT_TOOLS)
+
 # LESSON31_PROJECT_INVESTIGATION: static, bounded navigation only.
 from agent_project_investigation import investigate_project
 INVESTIGATION_TOOLS = [{
@@ -1129,6 +1144,17 @@ while True:
     # LESSON27_TOOL_ROUTING: task-specific advice, not permission to execute.
     from agent_tool_selection import tool_guidance
     active_instructions = instructions + tool_guidance(user_goal)
+    # Read-only audit: prioritize concise, useful results before budget exhaustion.
+    if any(word in user_goal.lower() for word in ('audit', 'review', 'inspect', 'investigate')):
+        active_instructions += (
+            " For a read-only audit, prioritize source files and manifests; ignore generated outputs. "
+            "Use trace_web_imports for JS/TS projects, trace_local_imports only for Python. "
+            "Do not spend separate API rounds marking plan steps complete. "
+            "After at most 3 tool-use rounds, provide a concise preliminary report with "
+            "confirmed evidence, uncertainties, priorities, and follow-up checks. "
+            "Reserve budget for that report. Never claim an audit is comprehensive when partial."
+        )
+
 
     request = {
         "model": "gpt-5.5",
@@ -1153,9 +1179,8 @@ while True:
         print(cost_guard.summary())
         break
 
-    max_steps = 10
-
-    for step in range(1, max_steps + 1):
+    # Continue until the model finishes, the user intervenes, or an error occurs.
+    for step in count(1):
 
         print(f"\n--- Step {step} ---")
 
@@ -1209,6 +1234,9 @@ while True:
 
                 elif tool_call.name == "trace_python_calls":
                     result = trace_python_calls(PROJECT_ROOT, arguments["filename"], is_safe_project_file)
+
+                elif tool_call.name == "trace_web_imports":
+                    result = trace_web_imports(PROJECT_ROOT, is_safe_project_file)
 
                 elif tool_call.name == "trace_local_imports":
                     result = trace_local_imports(PROJECT_ROOT, is_safe_project_file)
@@ -1396,6 +1424,3 @@ while True:
             previous_response_id = None
             break
 
-    else:
-        print("\nAgent 003 reached its step limit.")
-        previous_response_id = None
