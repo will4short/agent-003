@@ -98,7 +98,7 @@ IGNORED_DIRECTORIES = {
 ALLOWED_EXTENSIONS = {
     ".py", ".js", ".jsx", ".ts", ".tsx",
     ".json", ".md", ".txt", ".css",
-    ".html", ".yaml", ".yml",
+    ".html", ".yaml", ".yml", ".jsonc",
 }
 
 
@@ -130,7 +130,10 @@ def is_safe_project_file(project_root, filename):
     }:
         return False
 
-    if file_path.suffix.lower() not in ALLOWED_EXTENSIONS:
+    # Cloudflare's public response-header configuration is extensionless.
+    # Only this precise path is permitted, not arbitrary dotfiles or secrets.
+    is_public_headers = relative_path.as_posix() == "public/_headers"
+    if not is_public_headers and file_path.suffix.lower() not in ALLOWED_EXTENSIONS:
         return False
 
     return True
@@ -144,16 +147,6 @@ def read_project_file(project_root, filename):
 
     if not file_path.is_file():
         return "Error: File does not exist."
-
-    # Only read supported text-based files
-    allowed_extensions = {
-        ".py", ".js", ".jsx", ".ts", ".tsx",
-        ".json", ".md", ".txt", ".css",
-        ".html", ".yaml", ".yml",
-    }
-
-    if file_path.suffix.lower() not in allowed_extensions:
-        return "Error: Unsupported file type."
 
     if file_path.stat().st_size > 100_000:
         return "Error: File is too large to read."
@@ -178,14 +171,6 @@ def search_project_code(project_root, keyword):
 
         # Only search files inside the project
         if not is_safe_project_file(project_root, filename):
-            continue
-
-        # Only search supported text files
-        if file_path.suffix.lower() not in {
-            ".py", ".js", ".jsx", ".ts", ".tsx",
-            ".json", ".md", ".txt", ".css",
-            ".html", ".yaml", ".yml",
-        }:
             continue
 
         if file_path.stat().st_size > 100_000:
@@ -1104,7 +1089,9 @@ read_context = ReadContext()
 from agent_safe_errors import safe_tool_error  # LESSON30_PART2
 from agent_tool_optimizer import ToolCallOptimizer, TOOL_EFFICIENCY_GUIDANCE  # LESSON29_TOOL_OPTIMIZER
 from agent_cache_hardening import FileAwareToolCallOptimizer as ToolCallOptimizer  # LESSON30_CACHE_HARDENING
+from agent_execution import ExecutionMonitor  # V1.3_ADVISORY_EXECUTION
 tool_optimizer = ToolCallOptimizer(PROJECT_ROOT)
+execution_monitor = ExecutionMonitor()
 instructions += " " + TOOL_EFFICIENCY_GUIDANCE
 previous_response_id = None
 last_recovery = None  # In-memory; lasts only for this process.
@@ -1131,6 +1118,7 @@ while True:
     user_goal = "\n".join(message_lines).strip()
     read_context.invalidate()  # One cache per user task turn.
     tool_optimizer.reset()  # LESSON29: task-scoped read-only cache.
+    execution_monitor.reset()  # V1.3: task-scoped investigation history.
 
     if user_goal.lower() in {"exit", "quit"}:
         session_recorder.finish()
@@ -1150,7 +1138,7 @@ while True:
             " For a read-only audit, prioritize source files and manifests; ignore generated outputs. "
             "Use trace_web_imports for JS/TS projects, trace_local_imports only for Python. "
             "Do not spend separate API rounds marking plan steps complete. "
-            "After at most 3 tool-use rounds, provide a concise preliminary report with "
+            "As soon as sufficient evidence is available, provide a concise report with "
             "confirmed evidence, uncertainties, priorities, and follow-up checks. "
             "Reserve budget for that report. Never claim an audit is comprehensive when partial."
         )
@@ -1396,6 +1384,15 @@ while True:
             assessment = validated_output.get('evidence_validation') if isinstance(validated_output, dict) else None
             if assessment:
                 print(f"Evidence: {assessment['quality']} — {assessment['guidance']}")
+
+            repetition_guidance = execution_monitor.observe(tool_call.name, arguments, result)
+            if repetition_guidance:
+                print(f"Efficiency: {repetition_guidance}")
+                # Keep the actual tool result intact; guidance is additional metadata.
+                validated_output = {
+                    "tool_result": validated_output,
+                    "execution_guidance": repetition_guidance,
+                }
 
             tool_outputs.append({
                 "type": "function_call_output",
